@@ -18,7 +18,7 @@ This repository holds the extension's whole package, in the one-extension
 shape of [ADR 0044](https://github.com/pane-app/pane/blob/main/docs/adr/0044-a-git-repository-holds-one-extension-or-a-collection.md):
 [`pane.json`](pane.json), the images it names, and the Rust source
 ([`src/`](src), [`Cargo.toml`](Cargo.toml)) of its WebAssembly component.
-The [release tags](#releases) hold that component built, beside the
+The [release tags](#releases) hold the built component beside the
 manifest and the images.
 
 ## Install
