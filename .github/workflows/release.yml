@@ -1,0 +1,84 @@
+# The Release workflow of one of Pane's official extension repositories: build the component, commit it as the release revision, tag `v<version>`, push.
+# Part of moving Pane's default extensions into their own repositories
+# (pane-app/pane#279, spec pane-app/pane#207).
+#
+# The `pane-extension` SDK is not published to crates.io yet
+# (pane-app/pane#281), so every build below checks out Pane at the pinned
+# commit beside this repository and appends a `[patch.crates-io]` entry to
+# Cargo.toml that points `pane-extension` at the crate in that checkout.
+# The patch is applied by the workflow, never committed to the manifest.
+# TODO(pane-app/pane#287): remove the Pane checkout and the patch once the
+# crate is published.
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and tag the release revision
+    runs-on: ubuntu-24.04
+    steps:
+      # The branch to release; its tree plus the built component becomes
+      # the release revision, on the `release` branch. See README.md.
+      - uses: actions/checkout@v4
+
+      - name: Check out Pane at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: pane-app/pane
+          # The commit of Pane's main the SDK patch below builds against.
+          # Moved forward deliberately, with a green CI behind it.
+          ref: 26c8e2240291c72035fe0d94472248b70b3148bf
+          path: pane
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+
+      - name: Patch pane-extension to the Pane checkout (interim)
+        # Applied to the workflow's copy, never committed: Cargo.toml keeps
+        # the registry form for the day the SDK is published.
+        # TODO(pane-app/pane#287): remove this step and the checkout above.
+        run: |
+          cat >> Cargo.toml <<'EOF'
+
+          [patch.crates-io]
+          pane-extension = { path = "pane/guests/pane-extension" }
+          EOF
+          sed -n '/patch.crates-io/,$p' Cargo.toml
+
+      - name: Build the component
+        run: cargo build --release --locked --target wasm32-wasip2
+
+      - name: Check the package
+        run: bash scripts/check-package.sh
+
+      - name: Put the component where pane.json names it
+        run: |
+          crate=$(sed -n 's/^name = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          built="target/wasm32-wasip2/release/${crate//-/_}.wasm"
+          for component in $(jq -r '([.commands[]?.component] + [.operations[]?.component]) | unique | .[]' pane.json); do
+            mkdir -p "$(dirname "$component")"
+            cp "$built" "$component"
+          done
+          git status --short
+
+      - name: Commit the release revision, tag it, push both
+        run: |
+          version=$(jq -r .version pane.json)
+          git config user.name "hoangvu12"
+          git config user.email "hggaming91@gmail.com"
+          git switch -C release
+          git add -f dist
+          git commit -s -m "Release $version"
+          git tag "v$version"
+          # `release` is fully derived from the branch released, so it is
+          # reset to it on every release.
+          git push --force origin release
+          git push origin "v$version"
