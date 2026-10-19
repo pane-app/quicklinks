@@ -27,9 +27,9 @@ Install it from Git with Pane alone — no Git, compiler or other tool is
 needed on your computer. In root search, choose **Install extension from
 Git…** and name
 
-    https://github.com/pane-app/quicklinks@v0.5.0
+    https://github.com/pane-app/quicklinks@v0.6.0
 
-or, from a terminal, `pane --install git:github.com/pane-app/quicklinks@v0.5.0`.
+or, from a terminal, `pane --install git:github.com/pane-app/quicklinks@v0.6.0`.
 A `v<version>` tag pins a release: the tag's commit holds the package
 complete, at the version `pane.json` names. Without a reference, Pane
 installs the default branch, which between releases holds only the source
@@ -63,7 +63,7 @@ workflow does. `rust-toolchain.toml` pins the toolchain Pane builds its
 own extensions with.
 
 The component builds against Pane's Rust SDK, `pane-extension`
-(`pane-extension = "0.1"` in [`Cargo.toml`](Cargo.toml)). The SDK is not
+(`pane-extension = "0.2"` in [`Cargo.toml`](Cargo.toml)). The SDK is not
 published to crates.io yet (pane-app/pane#281); until it is, point a path
 at a Pane checkout's `guests/pane-extension` — as this repository's CI
 does — by appending to `Cargo.toml`:

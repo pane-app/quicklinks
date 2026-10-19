@@ -8,7 +8,7 @@
 //!   target, and the actions Open, Open With…, Copy Link, Edit, Duplicate and
 //!   Delete. It also supplies the quicklinks to root search as indexed
 //!   results that Pane opens itself.
-//! - **Create Quicklink** (`create`, view): the form. Edit and Duplicate
+//! - **Create Quicklink** (`create`, designed): the form. Edit and Duplicate
 //!   launch it with the quicklink in their context, so it opens filled in.
 //! - **Export Quicklinks** (`export`, no-view): copies them as JSON.
 //! - **Import Quicklinks** (`import`, no-view): adds those the clipboard's
@@ -22,16 +22,17 @@
 mod links;
 mod transfer;
 
-use pane_extension::alloc::{format, string::String, vec, vec::Vec};
+use pane_extension::alloc::{format, string::String, vec::Vec};
 use pane_extension::commands::{self, CommandRef, LaunchType};
-use pane_extension::feedback::{self, Confirmation, Toast, ToastStyle};
+use pane_extension::feedback::{self, Confirmation, HudStyle, Toast};
+use pane_extension::form::{self, FormValues};
 use pane_extension::icon::{self, Accessory, Icon, Tone};
 use pane_extension::indexed::{IndexedAction, IndexedResult, OpenTarget};
 use pane_extension::system::{self, Clip};
+use pane_extension::view::{Cx, IntoAnswer, View, text};
 use pane_extension::window;
 use pane_extension::{
-    Action, Command, Field, FieldKind, FieldValue, Form, FormError, Item, LaunchRecord, List,
-    Modifier, NoCustomView, Shortcut, TextField, actions, applications,
+    Action, Command, Item, LaunchRecord, List, Modifier, Shortcut, actions, applications,
 };
 
 use links::Quicklink;
@@ -46,79 +47,205 @@ const CREATE: &str = "create";
 const IMPORT: &str = "import";
 const EXPORT: &str = "export";
 
-/// The prefix of the edit form's id, before the quicklink's id.
-const EDIT: &str = "edit:";
-
 /// The form's fields.
 const NAME: &str = "name";
 const LINK: &str = "link";
 const OPEN_WITH: &str = "application";
 
-fn text(id: &str, label: &str, placeholder: &str) -> Field {
-    Field {
-        id: id.into(),
-        label: label.into(),
-        kind: FieldKind::Text(TextField {
-            placeholder: Some(placeholder.into()),
-        }),
-    }
+/// Why a submission was refused: the field whose value was refused (empty
+/// for the whole form) and the message saying why.
+type Refusal = (String, String);
+
+/// The Create Quicklink form, a designed view since forms moved onto the
+/// designed tree (pane-app/pane#241). Its state is the quicklink it edits
+/// (a new one when none), the values its fields start from, and why its
+/// last submission was refused. A submission checks the values, saves the
+/// quicklink, tells the user with a toast and returns to where the form
+/// came from.
+struct QuicklinkForm {
+    /// The quicklink being edited, by its id; `None` for a new one.
+    editing: Option<String>,
+    /// The view's title, naming the quicklink when it edits one.
+    title: String,
+    /// The values the fields start from.
+    name: String,
+    link: String,
+    open_with: String,
+    /// Why the last submission was refused, shown on its field.
+    refused: Option<Refusal>,
 }
 
-/// The quicklink form, titled `title`, its button `submit`.
-fn form(title: String, submit: &str) -> Form {
-    Form {
-        title,
-        fields: vec![
-            text(NAME, "Name", "Pane issues"),
-            text(
-                LINK,
-                "Link",
-                "https://…, mailto:…, or the path of a file, folder or application",
-            ),
-            text(OPEN_WITH, "Open With", "Default application"),
-        ],
-        submit_label: submit.into(),
-    }
-}
-
-/// The form `launch` asks for: a new quicklink's, one filled in to edit the
-/// quicklink its context names, or a new one filled in as a copy of it.
-fn form_screen(launch: &LaunchRecord) -> Result<List, String> {
-    let Some((purpose, id)) = transfer::purpose(launch.context.as_deref()) else {
-        return Ok(List::form(
-            CREATE,
-            form("Create Quicklink".into(), "Create Quicklink"),
-        ));
-    };
-    let saved = links::load()?;
-    let link = links::with_id(&saved, &id)
-        .map(|index| &saved[index])
-        .ok_or("That quicklink no longer exists")?;
-    // An installed application by its name, one named by its path by the
-    // path: what the field takes back.
-    let application = link.application.as_ref().map_or("", |application| {
-        if links::is_path(&application.id) {
-            application.id.as_str()
+impl QuicklinkForm {
+    /// The form `launch` asks for: a new quicklink's, one filled in to edit
+    /// the quicklink its context names, or a new one filled in as a copy of
+    /// it.
+    fn of(launch: &LaunchRecord) -> Result<QuicklinkForm, String> {
+        let Some((purpose, id)) = transfer::purpose(launch.context.as_deref()) else {
+            return Ok(QuicklinkForm {
+                editing: None,
+                title: "Create Quicklink".into(),
+                name: String::new(),
+                link: String::new(),
+                open_with: String::new(),
+                refused: None,
+            });
+        };
+        let saved = links::load()?;
+        let link = links::with_id(&saved, &id)
+            .map(|index| &saved[index])
+            .ok_or("That quicklink no longer exists")?;
+        // An installed application by its name, one named by its path by the
+        // path: what the field takes back.
+        let application = link.application.as_ref().map_or("", |application| {
+            if links::is_path(&application.id) {
+                application.id.as_str()
+            } else {
+                application.name.as_str()
+            }
+        });
+        let (editing, title, name) = if purpose == "edit" {
+            (
+                Some(link.id.clone()),
+                format!("Edit “{}”", link.name),
+                link.name.clone(),
+            )
         } else {
-            application.name.as_str()
+            (
+                None,
+                "Duplicate Quicklink".into(),
+                links::copy_name(&saved, &link.name),
+            )
+        };
+        Ok(QuicklinkForm {
+            editing,
+            title,
+            name,
+            link: link.target.clone(),
+            open_with: application.into(),
+            refused: None,
+        })
+    }
+
+    /// Saves the quicklink the form was submitted with, the one edited or a
+    /// new one, and answers what to tell the user; or why it was refused.
+    fn save(&self, values: &FormValues) -> Result<String, Refusal> {
+        let value = |field: &str| values.text(field).unwrap_or_default().trim();
+        let (name, target) = (value(NAME), value(LINK));
+        let mut saved = links::load().map_err(form_error)?;
+        let editing = match &self.editing {
+            Some(id) => Some(
+                links::with_id(&saved, id)
+                    .ok_or_else(|| form_error("This quicklink no longer exists".into()))?,
+            ),
+            None => None,
+        };
+        check(&saved, editing, name, target)?;
+        let application = links::application(value(OPEN_WITH), &installed())
+            .map_err(|problem| field_error(OPEN_WITH, problem))?;
+        let message = match editing {
+            Some(index) => {
+                let link = &mut saved[index];
+                link.name = name.into();
+                link.target = target.into();
+                link.application = application;
+                format!("Saved “{name}”")
+            }
+            None => {
+                let id = links::next_id(&saved);
+                saved.push(Quicklink {
+                    id,
+                    name: name.into(),
+                    target: target.into(),
+                    application,
+                });
+                format!("Created “{name}”")
+            }
+        };
+        links::save(&saved).map_err(form_error)?;
+        Ok(message)
+    }
+
+    /// Runs a submission: saves the quicklink, tells the user and returns
+    /// to where the form came from, or keeps the form open saying why it
+    /// was refused.
+    fn submit(&mut self, values: &FormValues) {
+        let message = match self.save(values) {
+            Ok(message) => message,
+            Err(refusal) => {
+                self.refused = Some(refusal);
+                return;
+            }
+        };
+        self.refused = None;
+        feedback::show_toast(Toast::success(message));
+        if self.editing.is_some() {
+            // Back to the quicklinks, as the edit came from there.
+            let search = CommandRef {
+                source: None,
+                command: SEARCH.into(),
+            };
+            if let Err(problem) = commands::launch(&search, LaunchType::UserInitiated, &[], None) {
+                self.refused = Some(form_error(problem));
+            }
+        } else {
+            // Back to root search, where the new quicklink is found.
+            window::pop_to_root(false);
         }
-    });
-    let screen = if purpose == "edit" {
-        List::form(
-            format!("{EDIT}{}", link.id),
-            form(format!("Edit “{}”", link.name), "Save Quicklink"),
+    }
+
+    /// The message the last submission was refused with for `field` (empty
+    /// for the whole form), or none.
+    fn refusal(&self, field: &str) -> Option<&str> {
+        match &self.refused {
+            Some((refused, message)) if refused == field => Some(message),
+            _ => None,
+        }
+    }
+}
+
+impl View for QuicklinkForm {
+    fn render(&mut self, cx: &mut Cx<Self>) -> impl IntoAnswer {
+        let submit = cx.form_listener(QuicklinkForm::submit);
+        let error = |field: &str| String::from(self.refusal(field).unwrap_or_default());
+        let mut form = form::Form::new()
+            .key("form")
+            .navigation_title(self.title.clone())
+            .submit_title(if self.editing.is_some() {
+                "Save Quicklink"
+            } else {
+                "Create Quicklink"
+            })
+            .on_submit(submit);
+        // A refusal of the whole form, which no field's error shows, draws
+        // over the fields. The form stays the tree's root, so the window
+        // keeps what the user typed in them.
+        if let Some(message) = self.refusal("") {
+            form = form.child(text(message).color(Tone::Danger));
+        }
+        form.child(
+            form::text_field(NAME)
+                .title("Name")
+                .placeholder("Pane issues")
+                .default_value(self.name.clone())
+                .error(error(NAME))
+                .auto_focus(),
         )
-        .value(NAME, link.name.clone())
-    } else {
-        List::form(
-            CREATE,
-            form("Duplicate Quicklink".into(), "Create Quicklink"),
+        .child(
+            form::text_field(LINK)
+                .title("Link")
+                .placeholder("https://…, mailto:…, or the path of a file, folder or application")
+                .default_value(self.link.clone())
+                .error(error(LINK)),
         )
-        .value(NAME, links::copy_name(&saved, &link.name))
-    };
-    Ok(screen
-        .value(LINK, link.target.clone())
-        .value(OPEN_WITH, application))
+        .child(
+            form::text_field(OPEN_WITH)
+                .title("Open With")
+                .placeholder("Default application")
+                .default_value(self.open_with.clone())
+                .error(error(OPEN_WITH)),
+        )
+        .into_answer()
+    }
 }
 
 /// Launches Create Quicklink with `context`, as the user would.
@@ -212,25 +339,14 @@ async fn delete(id: &str, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn value<'a>(values: &'a [FieldValue], id: &str) -> &'a str {
-    values
-        .iter()
-        .find(|value| value.id == id)
-        .map_or("", |value| value.value.trim())
+/// A refusal of `field`'s value, saying why.
+fn field_error(field: &str, message: String) -> Refusal {
+    (field.into(), message)
 }
 
-fn field_error(field: &str, message: String) -> FormError {
-    FormError {
-        field: Some(field.into()),
-        message,
-    }
-}
-
-fn form_error(message: String) -> FormError {
-    FormError {
-        field: None,
-        message,
-    }
+/// A refusal of the whole form, saying why.
+fn form_error(message: String) -> Refusal {
+    (String::new(), message)
 }
 
 /// Checks `name` and `target` for the quicklink at `index` (a new one when
@@ -240,7 +356,7 @@ fn check(
     index: Option<usize>,
     name: &str,
     target: &str,
-) -> Result<(), FormError> {
+) -> Result<(), Refusal> {
     if let Some(problem) = links::name_problem(name) {
         return Err(field_error(NAME, problem));
     }
@@ -277,7 +393,7 @@ fn export() -> Result<(), String> {
     system::copy(&Clip::Text(transfer::export(&saved)), false)?;
     feedback::show_hud(
         &format!("Copied {} as JSON", quicklinks(saved.len())),
-        ToastStyle::Success,
+        HudStyle::Success,
     );
     Ok(())
 }
@@ -360,13 +476,9 @@ fn new_quicklink(
 }
 
 impl Command for Quicklinks {
-    type CustomView = NoCustomView;
+    type DesignedView = QuicklinkForm;
 
     async fn render() -> Result<List, String> {
-        let launch = commands::current();
-        if launch.command == CREATE {
-            return form_screen(&launch);
-        }
         let saved = links::load()?;
         if saved.is_empty() {
             let create = Item::new("create", "Create Quicklink")
@@ -390,53 +502,16 @@ impl Command for Quicklinks {
         }
     }
 
-    async fn submit_form(form_id: String, values: Vec<FieldValue>) -> Result<String, FormError> {
-        let mut saved = links::load().map_err(form_error)?;
-        let (name, target) = (value(&values, NAME), value(&values, LINK));
-        let editing = match form_id.strip_prefix(EDIT) {
-            Some(id) => Some(
-                links::with_id(&saved, id)
-                    .ok_or_else(|| form_error("This quicklink no longer exists".into()))?,
-            ),
-            None if form_id == CREATE => None,
-            None => return Err(form_error(format!("unknown form: {form_id}"))),
-        };
-        check(&saved, editing, name, target)?;
-        let application = links::application(value(&values, OPEN_WITH), &installed())
-            .map_err(|problem| field_error(OPEN_WITH, problem))?;
-        let message = match editing {
-            Some(index) => {
-                let link = &mut saved[index];
-                link.name = name.into();
-                link.target = target.into();
-                link.application = application;
-                format!("Saved “{name}”")
-            }
-            None => {
-                let id = links::next_id(&saved);
-                saved.push(Quicklink {
-                    id,
-                    name: name.into(),
-                    target: target.into(),
-                    application,
-                });
-                format!("Created “{name}”")
-            }
-        };
-        links::save(&saved).map_err(form_error)?;
-        feedback::show_toast(Toast::success(message.clone()));
-        if editing.is_some() {
-            // Back to the quicklinks, as the edit came from there.
-            let search = CommandRef {
-                source: None,
-                command: SEARCH.into(),
-            };
-            commands::launch(&search, LaunchType::UserInitiated, &[], None).map_err(form_error)?;
-        } else {
-            // Back to root search, where the new quicklink is found.
-            window::pop_to_root(false);
+    /// Create Quicklink's form, a designed view: opened empty, or filled
+    /// in by Edit and Duplicate.
+    async fn open_designed_view(
+        command: String,
+        launch: LaunchRecord,
+    ) -> Result<QuicklinkForm, String> {
+        match command.as_str() {
+            CREATE => QuicklinkForm::of(&launch),
+            other => Err(format!("`{other}` opens no designed view")),
         }
-        Ok(message)
     }
 }
 
