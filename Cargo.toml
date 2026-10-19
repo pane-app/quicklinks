@@ -1,6 +1,6 @@
 [package]
 name = "quicklinks"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 
@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 # is, CI patches this dependency to the pane-extension folder of the Pane
 # checkout it pins (see .github/workflows/ci.yml), and a local build can
 # patch it the same way.
-pane-extension = "0.1"
+pane-extension = "0.2"
 # Import and Export Quicklinks read and write JSON; the edit and duplicate
 # launch contexts are JSON too.
 serde_json = { version = "1", default-features = false, features = ["alloc"] }

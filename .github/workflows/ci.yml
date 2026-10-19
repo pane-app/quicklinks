@@ -38,7 +38,7 @@ jobs:
           repository: pane-app/pane
           # The commit of Pane's main the SDK patch below builds against.
           # Moved forward deliberately, with a green CI behind it.
-          ref: 26c8e2240291c72035fe0d94472248b70b3148bf
+          ref: b8995933d09f07d17be376e5434908f914f0105f
           path: pane
           persist-credentials: false
 
