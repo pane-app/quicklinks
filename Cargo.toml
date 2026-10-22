@@ -8,10 +8,7 @@ license = "Apache-2.0 OR MIT"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Pane's Rust SDK. It is not on crates.io yet (pane-app/pane#281); until it
-# is, CI patches this dependency to the pane-extension folder of the Pane
-# checkout it pins (see .github/workflows/ci.yml), and a local build can
-# patch it the same way.
+# Pane's Rust SDK, from crates.io.
 pane-extension = "0.2"
 # Import and Export Quicklinks read and write JSON; the edit and duplicate
 # launch contexts are JSON too.
