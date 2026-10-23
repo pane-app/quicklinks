@@ -27,9 +27,9 @@ Install it from Git with Pane alone — no Git, compiler or other tool is
 needed on your computer. In root search, choose **Install extension from
 Git…** and name
 
-    https://github.com/pane-app/quicklinks@v0.6.0
+    https://github.com/pane-app/quicklinks@v0.6.1
 
-or, from a terminal, `pane --install git:github.com/pane-app/quicklinks@v0.6.0`.
+or, from a terminal, `pane --install git:github.com/pane-app/quicklinks@v0.6.1`.
 A `v<version>` tag pins a release: the tag's commit holds the package
 complete, at the version `pane.json` names. Without a reference, Pane
 installs the default branch, which between releases holds only the source
