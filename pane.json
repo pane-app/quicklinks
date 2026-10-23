@@ -1,7 +1,7 @@
 {
   "manifestVersion": 1,
   "title": "Quicklinks",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "apiVersion": "0.2",
   "icon": "icon.svg",
   "commands": [
